@@ -1,0 +1,4 @@
+Import:
+  - configs/recognition/tsm/metafile.yml
+  - configs/recognition/tsn/metafile.yml
+  

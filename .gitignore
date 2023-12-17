@@ -1,0 +1,6 @@
+#Folder config file 
+desktop.ini
+**/.git/**/desktop.ini
+
+# .lnk 
+mmaction2/datasets/allData.lnk
