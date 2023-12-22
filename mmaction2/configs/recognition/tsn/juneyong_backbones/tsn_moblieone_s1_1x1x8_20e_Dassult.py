@@ -5,7 +5,6 @@ _base_ = [
 # _base_설명 :tsn_mobileone_s1 backbone 모델 사용, schedules/adam 20epoch optimizer 사용
 # !pip install timm 
 # !pip install mmpretrain  
-
 # dataset settings
 dataset_type = 'RawframeDataset' 
 data_root = ''
@@ -22,7 +21,7 @@ train_pipeline = [
     dict(
         type='MultiScaleCrop',
         input_size=224,
-        scales=(1, 0.875, 0.75, 0.66),
+        scales=(1, 0.875, 0.75, 0.66), 
         random_crop=False,
         max_wh_scale_gap=1),
     dict(type='Resize', scale=(224, 224), keep_ratio=False),
