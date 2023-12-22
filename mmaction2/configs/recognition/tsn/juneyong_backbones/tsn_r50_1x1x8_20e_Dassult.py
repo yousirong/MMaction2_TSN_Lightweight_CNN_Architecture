@@ -5,16 +5,6 @@ _base_ = [
 # _base_설명 : tsn_r50을 backbone모델 사용, schedules/adam 20epoch optimizer 사용
 
 # dataset settings
-# dataset_type = 'VideoDataset' 
-# data_root = './'
-# data_root_val = './'
-# ann_file_train = 'G:/.shortcut-targets-by-id/1hutbrasOk0vtnMTCpNi_yyutljKj3nBm/allData/TL_train.txt'
-
-# ann_file_val = 'G:/.shortcut-targets-by-id/1hutbrasOk0vtnMTCpNi_yyutljKj3nBm/allData/TL_train.txt'
-# ann_file_test = 'G:/.shortcut-targets-by-id/1hutbrasOk0vtnMTCpNi_yyutljKj3nBm/allData/TL_train.txt'
-# ann_file_train = './datasets/allData/Youtube_abnormal.txt'
-# ann_file_val = './datasets/allData/Youtube_abnormal.txt'
-# ann_file_test = './datasets/allData/Youtube_abnormal.txt'
 dataset_type = 'RawframeDataset' 
 data_root = ''
 data_root_val = ''

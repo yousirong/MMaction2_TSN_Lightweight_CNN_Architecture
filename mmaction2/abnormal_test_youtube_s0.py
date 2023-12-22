@@ -50,13 +50,10 @@ cfg.dataset_type = 'VideoDataset'
 cfg.data_root = './datasets/allData/'
 cfg.test_dataloader.dataset.type = 'VideoDataset'
 
-
-
 # # TL 테스트 데이터 어노테이션 txt
 # cfg.test_dataloader.dataset.ann_file = './datasets/allData/TL_test_abnormal_normal.txt'
 # # 유튜브 실제 데이터 어노테이션 txt
 cfg.test_dataloader.dataset.ann_file = './datasets/allData/Youtube_abnormal.txt'
-
 cfg.test_dataloader.dataset.data_prefix.video = './datasets/abnormal_data_test'
 cfg.setdefault('omnisource', False)
 # cfg.model.cls_head.num_classes = 2
