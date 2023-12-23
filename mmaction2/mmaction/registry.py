@@ -41,6 +41,7 @@ from mmengine.logging import print_log
 from mmengine.registry import LOOPS
 from mmengine.runner.amp import autocast
 from mmengine.runner.base_loop import BaseLoop
+from mmengine.runner.loops import ValLoop
 from mmengine.runner.utils import calc_dynamic_intervals
 from mmengine.registry import LOG_PROCESSORS
 from mmengine.registry import DATA_SAMPLERS as MMENGINE_DATA_SAMPLERS
@@ -175,640 +176,789 @@ TOKENIZER = Registry(
     'tokenizer',
     locations=['mmaction.models'],
 )
+# Copyright (c) OpenMMLab. All rights reserved.
+import hashlib
+import logging
+import os.path as osp
+import pickle
+from collections import deque
+from math import inf
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence, Union
 
-@LOOPS.register_module()
-class ValLoop(BaseLoop):
-    """Loop for validation.
+from mmengine.dist import is_main_process, master_only
+from mmengine.fileio import FileClient, get_file_backend
+from mmengine.logging import print_log
+# from mmengine.registry import HOOKS
+from mmengine.utils import is_list_of, is_seq_of
+from mmengine.hooks.hook import Hook
+
+DATA_BATCH = Optional[Union[dict, tuple, list]]
+
+
+@HOOKS.register_module()
+class CheckpointHook(Hook):
+    """Save checkpoints periodically.
 
     Args:
-        runner (Runner): A reference of runner.
-        dataloader (Dataloader or dict): A dataloader object or a dict to
-            build a dataloader.
-        evaluator (Evaluator or dict or list): Used for computing metrics.
-        fp16 (bool): Whether to enable fp16 validation. Defaults to
-            False.
+        interval (int): The saving period. If ``by_epoch=True``, interval
+            indicates epochs, otherwise it indicates iterations.
+            Defaults to -1, which means "never".
+        by_epoch (bool): Saving checkpoints by epoch or by iteration.
+            Defaults to True.
+        save_optimizer (bool): Whether to save optimizer state_dict in the
+            checkpoint. It is usually used for resuming experiments.
+            Defaults to True.
+        save_param_scheduler (bool): Whether to save param_scheduler state_dict
+            in the checkpoint. It is usually used for resuming experiments.
+            Defaults to True.
+        out_dir (str, Path, Optional): The root directory to save checkpoints.
+            If not specified, ``runner.work_dir`` will be used by default. If
+            specified, the ``out_dir`` will be the concatenation of ``out_dir``
+            and the last level directory of ``runner.work_dir``. For example,
+            if the input ``our_dir`` is ``./tmp`` and ``runner.work_dir`` is
+            ``./work_dir/cur_exp``, then the ckpt will be saved in
+            ``./tmp/cur_exp``. Defaults to None.
+        max_keep_ckpts (int): The maximum checkpoints to keep.
+            In some cases we want only the latest few checkpoints and would
+            like to delete old ones to save the disk space.
+            Defaults to -1, which means unlimited.
+        save_last (bool): Whether to force the last checkpoint to be
+            saved regardless of interval. Defaults to True.
+        save_best (str, List[str], optional): If a metric is specified, it
+            would measure the best checkpoint during evaluation. If a list of
+            metrics is passed, it would measure a group of best checkpoints
+            corresponding to the passed metrics. The information about best
+            checkpoint(s) would be saved in ``runner.message_hub`` to keep
+            best score value and best checkpoint path, which will be also
+            loaded when resuming checkpoint. Options are the evaluation metrics
+            on the test dataset. e.g., ``bbox_mAP``, ``segm_mAP`` for bbox
+            detection and instance segmentation. ``AR@100`` for proposal
+            recall. If ``save_best`` is ``auto``, the first key of the returned
+            ``OrderedDict`` result will be used. Defaults to None.
+        rule (str, List[str], optional): Comparison rule for best score. If
+            set to None, it will infer a reasonable rule. Keys such as 'acc',
+            'top' .etc will be inferred by 'greater' rule. Keys contain 'loss'
+            will be inferred by 'less' rule. If ``save_best`` is a list of
+            metrics and ``rule`` is a str, all metrics in ``save_best`` will
+            share the comparison rule. If ``save_best`` and ``rule`` are both
+            lists, their length must be the same, and metrics in ``save_best``
+            will use the corresponding comparison rule in ``rule``. Options
+            are 'greater', 'less', None and list which contains 'greater' and
+            'less'. Defaults to None.
+        greater_keys (List[str], optional): Metric keys that will be
+            inferred by 'greater' comparison rule. If ``None``,
+            _default_greater_keys will be used. Defaults to None.
+        less_keys (List[str], optional): Metric keys that will be
+            inferred by 'less' comparison rule. If ``None``, _default_less_keys
+            will be used. Defaults to None.
+        file_client_args (dict, optional): Arguments to instantiate a
+            FileClient. See :class:`mmengine.fileio.FileClient` for details.
+            Defaults to None. It will be deprecated in future. Please use
+            ``backend_args`` instead.
+        filename_tmpl (str, optional): String template to indicate checkpoint
+            name. If specified, must contain one and only one "{}", which will
+            be replaced with ``epoch + 1`` if ``by_epoch=True`` else
+            ``iteration + 1``.
+            Defaults to None, which means "epoch_{}.pth" or "iter_{}.pth"
+            accordingly.
+        backend_args (dict, optional): Arguments to instantiate the
+            prefix of uri corresponding backend. Defaults to None.
+            `New in version 0.2.0.`
+        published_keys (str, List[str], optional): If ``save_last`` is ``True``
+            or ``save_best`` is not ``None``, it will automatically
+            publish model with keys in the list after training.
+            Defaults to None.
+            `New in version 0.7.1.`
+        save_begin (int): Control the epoch number or iteration number
+            at which checkpoint saving begins. Defaults to 0, which means
+            saving at the beginning.
+            `New in version 0.8.3.`
+
+    Examples:
+        >>> # Save best based on single metric
+        >>> CheckpointHook(interval=2, by_epoch=True, save_best='acc',
+        >>>                rule='less')
+        >>> # Save best based on multi metrics with the same comparison rule
+        >>> CheckpointHook(interval=2, by_epoch=True,
+        >>>                save_best=['acc', 'mIoU'], rule='greater')
+        >>> # Save best based on multi metrics with different comparison rule
+        >>> CheckpointHook(interval=2, by_epoch=True,
+        >>>                save_best=['FID', 'IS'], rule=['less', 'greater'])
+        >>> # Save best based on single metric and publish model after training
+        >>> CheckpointHook(interval=2, by_epoch=True, save_best='acc',
+        >>>                rule='less', published_keys=['meta', 'state_dict'])
     """
+    out_dir: str
+
+    priority = 'VERY_LOW'
+
+    # logic to save best checkpoints
+    # Since the key for determining greater or less is related to the
+    # downstream tasks, downstream repositories may need to overwrite
+    # the following inner variables accordingly.
+
+    rule_map = {'greater': lambda x, y: x > y, 'less': lambda x, y: x < y}
+    init_value_map = {'greater': -inf, 'less': inf}
+    _default_greater_keys = [
+        'acc', 'top', 'AR@', 'auc', 'precision', 'mAP', 'mDice', 'mIoU',
+        'mAcc', 'aAcc'
+    ]
+    _default_less_keys = ['loss']
 
     def __init__(self,
-                 runner,
-                 dataloader: Union[DataLoader, Dict],
-                 evaluator: Union[Evaluator, Dict, List],
-                 fp16: bool = False,
-                 print_loss: bool = True) -> None:
+                 interval: int = -1,
+                 by_epoch: bool = True,
+                 save_optimizer: bool = True,
+                 save_param_scheduler: bool = True,
+                 out_dir: Optional[Union[str, Path]] = None,
+                 max_keep_ckpts: int = -1,
+                 save_last: bool = True,
+                 save_best: Union[str, List[str], None] = None,
+                 rule: Union[str, List[str], None] = None,
+                 greater_keys: Optional[Sequence[str]] = None,
+                 less_keys: Optional[Sequence[str]] = None,
+                 file_client_args: Optional[dict] = None,
+                 filename_tmpl: Optional[str] = None,
+                 backend_args: Optional[dict] = None,
+                 published_keys: Union[str, List[str], None] = None,
+                 save_begin: int = 0,
+                 **kwargs) -> None:
+        self.interval = interval
+        self.by_epoch = by_epoch
+        self.save_optimizer = save_optimizer
+        self.save_param_scheduler = save_param_scheduler
+        self.out_dir = out_dir  # type: ignore
+        self.max_keep_ckpts = max_keep_ckpts
+        self.save_last = save_last
+        self.args = kwargs
+
+        if file_client_args is not None:
+            print_log(
+                '"file_client_args" will be deprecated in future. '
+                'Please use "backend_args" instead',
+                logger='current',
+                level=logging.WARNING)
+            if backend_args is not None:
+                raise ValueError(
+                    '"file_client_args" and "backend_args" cannot be set '
+                    'at the same time.')
+
+        self.file_client_args = file_client_args
+        self.backend_args = backend_args
+
+        if filename_tmpl is None:
+            if self.by_epoch:
+                self.filename_tmpl = 'epoch_{}.pth'
+            else:
+                self.filename_tmpl = 'iter_{}.pth'
+        else:
+            self.filename_tmpl = filename_tmpl
+
+        # save best logic
+        assert (isinstance(save_best, str) or is_list_of(save_best, str)
+                or (save_best is None)), (
+                    '"save_best" should be a str or list of str or None, '
+                    f'but got {type(save_best)}')
+
+        if isinstance(save_best, list):
+            if 'auto' in save_best:
+                assert len(save_best) == 1, (
+                    'Only support one "auto" in "save_best" list.')
+            assert len(save_best) == len(
+                set(save_best)), ('Find duplicate element in "save_best".')
+        else:
+            # convert str to list[str]
+            if save_best is not None:
+                save_best = [save_best]  # type: ignore # noqa: F401
+        self.save_best = save_best
+
+        # rule logic
+        assert (isinstance(rule, str) or is_list_of(rule, str)
+                or (rule is None)), (
+                    '"rule" should be a str or list of str or None, '
+                    f'but got {type(rule)}')
+        if isinstance(rule, list):
+            # check the length of rule list
+            assert len(rule) in [
+                1,
+                len(self.save_best)  # type: ignore
+            ], ('Number of "rule" must be 1 or the same as number of '
+                f'"save_best", but got {len(rule)}.')
+        else:
+            # convert str/None to list
+            rule = [rule]  # type: ignore # noqa: F401
+
+        if greater_keys is None:
+            self.greater_keys = self._default_greater_keys
+        else:
+            if not isinstance(greater_keys, (list, tuple)):
+                greater_keys = (greater_keys, )  # type: ignore
+            assert is_seq_of(greater_keys, str)
+            self.greater_keys = greater_keys  # type: ignore
+
+        if less_keys is None:
+            self.less_keys = self._default_less_keys
+        else:
+            if not isinstance(less_keys, (list, tuple)):
+                less_keys = (less_keys, )  # type: ignore
+            assert is_seq_of(less_keys, str)
+            self.less_keys = less_keys  # type: ignore
+
+        if self.save_best is not None:
+            self.is_better_than: Dict[str, Callable] = dict()
+            self._init_rule(rule, self.save_best)
+            if len(self.key_indicators) == 1:
+                self.best_ckpt_path: Optional[str] = None
+            else:
+                self.best_ckpt_path_dict: Dict = dict()
+
+        # published keys
+        if not (isinstance(published_keys, str)
+                or is_seq_of(published_keys, str) or published_keys is None):
+            raise TypeError(
+                '"published_keys" should be a str or a sequence of str or '
+                f'None, but got {type(published_keys)}')
+
+        if isinstance(published_keys, str):
+            published_keys = [published_keys]
+        elif isinstance(published_keys, (list, tuple)):
+            assert len(published_keys) == len(set(published_keys)), (
+                'Find duplicate elements in "published_keys".')
+        self.published_keys = published_keys
+
+        self.last_ckpt = None
+        if save_begin < 0:
+            raise ValueError(
+                'save_begin should not be less than 0, but got {save_begin}')
+        self.save_begin = save_begin
+
+    def before_train(self, runner) -> None:
+        """Finish all operations, related to checkpoint.
+
+        This function will get the appropriate file client, and the directory
+        to save these checkpoints of the model.
+
+        Args:
+            runner (Runner): The runner of the training process.
+        """
+        if self.out_dir is None:
+            self.out_dir = runner.work_dir
+
+        # If self.file_client_args is None, self.file_client will not
+        # used in CheckpointHook. To avoid breaking backward compatibility,
+        # it will not be removed util the release of MMEngine1.0
+        self.file_client = FileClient.infer_client(self.file_client_args,
+                                                   self.out_dir)
+
+        if self.file_client_args is None:
+            self.file_backend = get_file_backend(
+                self.out_dir, backend_args=self.backend_args)
+        else:
+            self.file_backend = self.file_client
+
+        # if `self.out_dir` is not equal to `runner.work_dir`, it means that
+        # `self.out_dir` is set so the final `self.out_dir` is the
+        # concatenation of `self.out_dir` and the last level directory of
+        # `runner.work_dir`
+        if self.out_dir != runner.work_dir:
+            basename = osp.basename(runner.work_dir.rstrip(osp.sep))
+            self.out_dir = self.file_backend.join_path(
+                self.out_dir, basename)  # type: ignore  # noqa: E501
+
+        runner.logger.info(f'Checkpoints will be saved to {self.out_dir}.')
+
+        if self.save_best is not None:
+            if len(self.key_indicators) == 1:
+                if 'best_ckpt' not in runner.message_hub.runtime_info:
+                    self.best_ckpt_path = None
+                else:
+                    self.best_ckpt_path = runner.message_hub.get_info(
+                        'best_ckpt')
+            else:
+                for key_indicator in self.key_indicators:
+                    best_ckpt_name = f'best_ckpt_{key_indicator}'
+                    if best_ckpt_name not in runner.message_hub.runtime_info:
+                        self.best_ckpt_path_dict[key_indicator] = None
+                    else:
+                        self.best_ckpt_path_dict[
+                            key_indicator] = runner.message_hub.get_info(
+                                best_ckpt_name)
+
+        if self.max_keep_ckpts > 0:
+            keep_ckpt_ids = []
+            if 'keep_ckpt_ids' in runner.message_hub.runtime_info:
+                keep_ckpt_ids = runner.message_hub.get_info('keep_ckpt_ids')
+
+                while len(keep_ckpt_ids) > self.max_keep_ckpts:
+                    step = keep_ckpt_ids.pop(0)
+                    if is_main_process():
+                        path = self.file_backend.join_path(
+                            self.out_dir, self.filename_tmpl.format(step))
+                        if self.file_backend.isfile(path):
+                            self.file_backend.remove(path)
+                        elif self.file_backend.isdir(path):
+                            # checkpoints saved by deepspeed are directories
+                            self.file_backend.rmtree(path)
+
+            self.keep_ckpt_ids: deque = deque(keep_ckpt_ids,
+                                              self.max_keep_ckpts)
+
+    def after_train_epoch(self, runner) -> None:
+        """Save the checkpoint and synchronize buffers after each epoch.
+
+        Args:
+            runner (Runner): The runner of the training process.
+        """
+        if not self.by_epoch:
+            return
+
+        # save checkpoint for following cases:
+        # 1. every ``self.interval`` epochs which start at ``self.save_begin``
+        # 2. reach the last epoch of training
+        if self.every_n_epochs(runner, self.interval, self.save_begin) or (
+                self.save_last and self.is_last_train_epoch(runner)):
+            runner.logger.info(
+                f'Saving checkpoint at {runner.epoch + 1} epochs')
+            self._save_checkpoint(runner)
+
+    def after_val_epoch(self, runner, metrics=None):
+        """Save the checkpoint and synchronize buffers after each evaluation
+        epoch.
+
+        Args:
+            runner (Runner): The runner of the training process.
+            metrics (dict): Evaluation results of all metrics
+        """
+        if metrics is None or len(metrics) == 0:
+            runner.logger.warning(
+                'Since `metrics` is an empty dict, the behavior to save '
+                'the best checkpoint will be skipped in this evaluation.')
+            return
+        if 'loss' in metrics:
+            val_loss = metrics['loss']
+            runner.logger.info(f'Validation Loss: {val_loss}')
+        self._save_best_checkpoint(runner, metrics)
+
+    def after_train(self, runner) -> None:
+        """Publish the checkpoint after training.
+
+        Args:
+            runner (Runner): The runner of the training process.
+        """
+        if self.published_keys is None:
+            return
+
+        if self.save_last and self.last_ckpt is not None:
+            self._publish_model(runner, self.last_ckpt)
+
+        if getattr(self, 'best_ckpt_path', None) is not None:
+            self._publish_model(runner, str(self.best_ckpt_path))
+        if getattr(self, 'best_ckpt_path_dict', None) is not None:
+            for best_ckpt in self.best_ckpt_path_dict.values():
+                self._publish_model(runner, best_ckpt)
+
+    @master_only
+    def _publish_model(self, runner, ckpt_path: str) -> None:
+        """Remove unnecessary keys from ckpt_path and save the new checkpoint.
+
+        Args:
+            runner (Runner): The runner of the training process.
+            ckpt_path (str): The checkpoint path that ought to be published.
+        """
+        from mmengine.runner import save_checkpoint
+        from mmengine.runner.checkpoint import _load_checkpoint
+        checkpoint = _load_checkpoint(ckpt_path)
+        assert self.published_keys is not None
+        removed_keys = []
+        for key in list(checkpoint.keys()):
+            if key not in self.published_keys:
+                removed_keys.append(key)
+                checkpoint.pop(key)
+        if removed_keys:
+            print_log(
+                f'Key {removed_keys} will be removed because they are not '
+                'found in published_keys. If you want to keep them, '
+                f'please set `{removed_keys}` in published_keys',
+                logger='current')
+        checkpoint_data = pickle.dumps(checkpoint)
+        sha = hashlib.sha256(checkpoint_data).hexdigest()
+        final_path = osp.splitext(ckpt_path)[0] + f'-{sha[:8]}.pth'
+        save_checkpoint(checkpoint, final_path)
+        print_log(
+            f'The checkpoint ({ckpt_path}) is published to '
+            f'{final_path}.',
+            logger='current')
+
+    def _save_checkpoint_with_step(self, runner, step, meta):
+        # remove other checkpoints before save checkpoint to make the
+        # self.keep_ckpt_ids are saved as expected
+        if self.max_keep_ckpts > 0:
+            # _save_checkpoint and _save_best_checkpoint may call this
+            # _save_checkpoint_with_step in one epoch
+            if len(self.keep_ckpt_ids) > 0 and self.keep_ckpt_ids[-1] == step:
+                pass
+            else:
+                if len(self.keep_ckpt_ids) == self.max_keep_ckpts:
+                    _step = self.keep_ckpt_ids.popleft()
+                    if is_main_process():
+                        ckpt_path = self.file_backend.join_path(
+                            self.out_dir, self.filename_tmpl.format(_step))
+
+                        if self.file_backend.isfile(ckpt_path):
+                            self.file_backend.remove(ckpt_path)
+                        elif self.file_backend.isdir(ckpt_path):
+                            # checkpoints saved by deepspeed are directories
+                            self.file_backend.rmtree(ckpt_path)
+
+                self.keep_ckpt_ids.append(step)
+                runner.message_hub.update_info('keep_ckpt_ids',
+                                               list(self.keep_ckpt_ids))
+
+        ckpt_filename = self.filename_tmpl.format(step)
+        self.last_ckpt = self.file_backend.join_path(self.out_dir,
+                                                     ckpt_filename)
+        runner.message_hub.update_info('last_ckpt', self.last_ckpt)
+
+        runner.save_checkpoint(
+            self.out_dir,
+            ckpt_filename,
+            self.file_client_args,
+            save_optimizer=self.save_optimizer,
+            save_param_scheduler=self.save_param_scheduler,
+            meta=meta,
+            by_epoch=self.by_epoch,
+            backend_args=self.backend_args,
+            **self.args)
+
+        # Model parallel-like training should involve pulling sharded states
+        # from all ranks, but skip the following procedure.
+        if not is_main_process():
+            return
+
+        save_file = osp.join(runner.work_dir, 'last_checkpoint')
+        with open(save_file, 'w') as f:
+            f.write(self.last_ckpt)  # type: ignore
+
+    def _save_checkpoint(self, runner) -> None:
+        """Save the current checkpoint and delete outdated checkpoint.
+
+        Args:
+            runner (Runner): The runner of the training process.
+        """
+        if self.by_epoch:
+            step = runner.epoch + 1
+            meta = dict(epoch=step, iter=runner.iter)
+        else:
+            step = runner.iter + 1
+            meta = dict(epoch=runner.epoch, iter=step)
+
+        self._save_checkpoint_with_step(runner, step, meta=meta)
+
+    def _save_best_checkpoint(self, runner, metrics) -> None:
+        """Save the current checkpoint and delete outdated checkpoint.
+
+        Args:
+            runner (Runner): The runner of the training process.
+            metrics (dict): Evaluation results of all metrics.
+        """
+        if not self.save_best:
+            return
+
+        if self.by_epoch:
+            ckpt_filename = self.filename_tmpl.format(runner.epoch)
+            cur_type, cur_time = 'epoch', runner.epoch
+        else:
+            ckpt_filename = self.filename_tmpl.format(runner.iter)
+            cur_type, cur_time = 'iter', runner.iter
+
+        meta = dict(epoch=runner.epoch, iter=runner.iter)
+
+        # handle auto in self.key_indicators and self.rules before the loop
+        if 'auto' in self.key_indicators:
+            self._init_rule(self.rules, [list(metrics.keys())[0]])
+
+        best_ckpt_updated = False
+        # save best logic
+        # get score from messagehub
+        for key_indicator, rule in zip(self.key_indicators, self.rules):
+            key_score = metrics[key_indicator]
+
+            if len(self.key_indicators) == 1:
+                best_score_key = 'best_score'
+                runtime_best_ckpt_key = 'best_ckpt'
+                best_ckpt_path = self.best_ckpt_path
+            else:
+                best_score_key = f'best_score_{key_indicator}'
+                runtime_best_ckpt_key = f'best_ckpt_{key_indicator}'
+                best_ckpt_path = self.best_ckpt_path_dict[key_indicator]
+
+            if best_score_key not in runner.message_hub.runtime_info:
+                best_score = self.init_value_map[rule]
+            else:
+                best_score = runner.message_hub.get_info(best_score_key)
+
+            if key_score is None or not self.is_better_than[key_indicator](
+                    key_score, best_score):
+                continue
+
+            best_ckpt_updated = True
+
+            best_score = key_score
+            runner.message_hub.update_info(best_score_key, best_score)
+
+            if best_ckpt_path and is_main_process():
+                is_removed = False
+                if self.file_backend.isfile(best_ckpt_path):
+                    self.file_backend.remove(best_ckpt_path)
+                    is_removed = True
+                elif self.file_backend.isdir(best_ckpt_path):
+                    # checkpoints saved by deepspeed are directories
+                    self.file_backend.rmtree(best_ckpt_path)
+                    is_removed = True
+
+                if is_removed:
+                    runner.logger.info(
+                        f'The previous best checkpoint {best_ckpt_path} '
+                        'is removed')
+
+            best_ckpt_name = f'best_{key_indicator}_{ckpt_filename}'
+            # Replace illegal characters for filename with `_`
+            best_ckpt_name = best_ckpt_name.replace('/', '_')
+            if len(self.key_indicators) == 1:
+                self.best_ckpt_path = self.file_backend.join_path(  # type: ignore # noqa: E501
+                    self.out_dir, best_ckpt_name)
+                runner.message_hub.update_info(runtime_best_ckpt_key,
+                                               self.best_ckpt_path)
+            else:
+                self.best_ckpt_path_dict[
+                    key_indicator] = self.file_backend.join_path(  # type: ignore # noqa: E501
+                        self.out_dir, best_ckpt_name)
+                runner.message_hub.update_info(
+                    runtime_best_ckpt_key,
+                    self.best_ckpt_path_dict[key_indicator])
+            runner.save_checkpoint(
+                self.out_dir,
+                filename=best_ckpt_name,
+                file_client_args=self.file_client_args,
+                save_optimizer=False,
+                save_param_scheduler=False,
+                meta=meta,
+                by_epoch=False,
+                backend_args=self.backend_args)
+            runner.logger.info(
+                f'The best checkpoint with {best_score:0.4f} {key_indicator} '
+                f'at {cur_time} {cur_type} is saved to {best_ckpt_name}.')
+
+        # save checkpoint again to update the best_score and best_ckpt stored
+        # in message_hub because the checkpoint saved in `after_train_epoch`
+        # or `after_train_iter` stage only keep the previous best checkpoint
+        # not the current best checkpoint which causes the current best
+        # checkpoint can not be removed when resuming training.
+        if best_ckpt_updated and self.last_ckpt is not None:
+            self._save_checkpoint_with_step(runner, cur_time, meta)
+
+    def _init_rule(self, rules, key_indicators) -> None:
+        """Initialize rule, key_indicator, comparison_func, and best score. If
+        key_indicator is a list of string and rule is a string, all metric in
+        the key_indicator will share the same rule.
+
+        Here is the rule to determine which rule is used for key indicator when
+        the rule is not specific (note that the key indicator matching is case-
+        insensitive):
+
+        1. If the key indicator is in ``self.greater_keys``, the rule
+            will be specified as 'greater'.
+        2. Or if the key indicator is in ``self.less_keys``, the rule
+            will be specified as 'less'.
+        3. Or if any one item in ``self.greater_keys`` is a substring of
+            key_indicator, the rule will be specified as 'greater'.
+        4. Or if any one item in ``self.less_keys`` is a substring of
+            key_indicator, the rule will be specified as 'less'.
+
+        Args:
+            rule (List[Optional[str]]): Comparison rule for best score.
+            key_indicator (List[str]): Key indicator to determine
+                the comparison rule.
+        """
+        if len(rules) == 1:
+            rules = rules * len(key_indicators)
+
+        self.rules = []
+        for rule, key_indicator in zip(rules, key_indicators):
+
+            if rule not in self.rule_map and rule is not None:
+                raise KeyError('rule must be greater, less or None, '
+                               f'but got {rule}.')
+
+            if rule is None and key_indicator != 'auto':
+                # `_lc` here means we use the lower case of keys for
+                # case-insensitive matching
+                key_indicator_lc = key_indicator.lower()
+                greater_keys = {key.lower() for key in self.greater_keys}
+                less_keys = {key.lower() for key in self.less_keys}
+
+                if key_indicator_lc in greater_keys:
+                    rule = 'greater'
+                elif key_indicator_lc in less_keys:
+                    rule = 'less'
+                elif any(key in key_indicator_lc for key in greater_keys):
+                    rule = 'greater'
+                elif any(key in key_indicator_lc for key in less_keys):
+                    rule = 'less'
+                else:
+                    raise ValueError('Cannot infer the rule for key '
+                                     f'{key_indicator}, thus a specific rule '
+                                     'must be specified.')
+            if rule is not None:
+                self.is_better_than[key_indicator] = self.rule_map[rule]
+            self.rules.append(rule)
+
+        self.key_indicators = key_indicators
+
+    def after_train_iter(self,
+                         runner,
+                         batch_idx: int,
+                         data_batch: DATA_BATCH = None,
+                         outputs=Optional[dict]) -> None:
+        """Save the checkpoint and synchronize buffers after each iteration.
+
+        Args:
+            runner (Runner): The runner of the training process.
+            batch_idx (int): The index of the current batch in the train loop.
+            data_batch (dict or tuple or list, optional): Data from dataloader.
+            outputs (dict, optional): Outputs from model.
+        """
+        if self.by_epoch:
+            return
+
+        # save checkpoint for following cases:
+        # 1. every ``self.interval`` iterations
+        #       which start at ``self.save_begin``
+        # 2. reach the last iteration of training
+        if self.every_n_train_iters(runner, self.interval,
+                                    self.save_begin) or \
+                (self.save_last and
+                 self.is_last_train_iter(runner)):
+            runner.logger.info(
+                f'Saving checkpoint at {runner.iter + 1} iterations')
+            self._save_checkpoint(runner)
+            
+# from mmcv.runner import hooks
+
+@LOOPS.register_module()
+class EpochBasedValLoop(BaseLoop):
+    def __init__(
+            self,
+            runner,
+            dataloader: Union[DataLoader, Dict],
+            evaluator: Union[Evaluator, Dict, List],
+            max_epochs: int,
+            fp16: bool = False,
+            val_begin: int = 1,
+            val_interval: int = 1,
+            dynamic_intervals: Optional[List[Tuple[int, int]]] = None) -> None:
         super().__init__(runner, dataloader)
+        self._max_epochs = int(max_epochs)
+        assert self._max_epochs == max_epochs, \
+            f'`max_epochs` should be a integer number, but get {max_epochs}.'
+        self._max_iters = self._max_epochs * len(self.dataloader)
+        self._epoch = 0
+        self._iter = 0
+        self.val_begin = val_begin
+        self.val_interval = val_interval
+        self.stop_training = False
 
         if isinstance(evaluator, (dict, list)):
-            self.evaluator = runner.build_evaluator(evaluator)  # type: ignore
+            self.evaluator = runner.build_evaluator(evaluator)
         else:
             assert isinstance(evaluator, Evaluator), (
-                'evaluator must be one of dict, list or Evaluator instance, '
+                'evaluator must be one of dict, list, or Evaluator instance, '
                 f'but got {type(evaluator)}.')
-            self.evaluator = evaluator  # type: ignore
+            self.evaluator = evaluator
+
         if hasattr(self.dataloader.dataset, 'metainfo'):
             self.evaluator.dataset_meta = self.dataloader.dataset.metainfo
-            self.runner.visualizer.dataset_meta = \
-                self.dataloader.dataset.metainfo
+            self.runner.visualizer.dataset_meta = self.dataloader.dataset.metainfo
         else:
             print_log(
                 f'Dataset {self.dataloader.dataset.__class__.__name__} has no '
-                'metainfo. ``dataset_meta`` in evaluator, metric and '
+                'metainfo. ``dataset_meta`` in evaluator, metric, and '
                 'visualizer will be None.',
                 logger='current',
                 level=logging.WARNING)
         self.fp16 = fp16
-        # custom
-        self.print_loss = print_loss 
-        
+
+        self.dynamic_milestones, self.dynamic_intervals = \
+            calc_dynamic_intervals(
+                self.val_interval, dynamic_intervals)
+    @property
+    def max_epochs(self):
+        """int: Total epochs to train model."""
+        return self._max_epochs
+
+    @property
+    def max_iters(self):
+        """int: Total iterations to train model."""
+        return self._max_iters
+
+    @property
+    def epoch(self):
+        """int: Current epoch."""
+        return self._epoch
+
+    @property
+    def iter(self):
+        """int: Current iteration."""
+        return self._iter
+    
     def run(self) -> dict:
         """Launch validation."""
         self.runner.call_hook('before_val')
-        self.runner.call_hook('before_val_epoch')
+        # self.runner.call_hook('before_val_epoch')
         self.runner.model.eval()
-        # custom
-        val_loss = 0.0
-        
         for idx, data_batch in enumerate(self.dataloader):
-                    loss = self.run_iter(idx, data_batch)  # Get the validation loss
-                    val_loss += loss  # Accumulate the validation loss
-        avg_val_loss = val_loss / len(self.dataloader)  # Calculate average validation loss
-
-        if self.print_loss:
-            print(f"Average Validation Loss: {avg_val_loss}")  # Print the validation loss
-        
-        # compute metrics
+            self.run_iter(idx, data_batch)
         metrics = self.evaluator.evaluate(len(self.dataloader.dataset))
-        self.runner.call_hook('after_val_epoch', metrics=metrics)
+        # self.runner.call_hook('after_val_epoch', metrics=metrics)
         self.runner.call_hook('after_val')
-        
         return metrics
-
+    
+    def run_epoch(self) -> None:
+        self.runner.call_hook('before_val_epoch')
+        self.runner.model.val()
+        for idx, data_batch in enumerate(self.dataloader):
+            self.run_iter(idx, data_batch)
+        while self._epoch < self._max_epochs and not self.stop_training:
+            self.run_epoch()
+            self._decide_current_val_interval()
+            if (self.runner.val_loop is not None
+                    and self._epoch >= self.val_begin
+                    and self._epoch % self.val_interval == 0):
+                self.runner.val_loop.run()
+        self.runner.call_hook('after_val_epoch')
+        self._epoch += 1
+        
     @torch.no_grad()
-    def run_iter(self, idx, data_batch: Sequence[dict]):
-        """Iterate one mini-batch.
-
-        Args:
-            data_batch (Sequence[dict]): Batch of data
-                from dataloader.
-        """
+    def run_iter(self, idx, data_batch: Sequence[dict]) -> None:
         self.runner.call_hook(
             'before_val_iter', batch_idx=idx, data_batch=data_batch)
-        # outputs should be sequence of BaseDataElement
-        with autocast(enabled=self.fp16):
-            outputs_list = self.runner.model.val_step(data_batch)
-            
-        val_loss = 0.0
-        for outputs in outputs_list:
-            loss = outputs.get('loss', 0.0)  # Access 'loss' key from each dictionary
-            val_loss += loss  # Accumulate the validation loss
-        
-        # Assuming self.evaluator.process() expects a list of data samples
-        # Convert outputs_list to a list of dictionaries if needed
-        processed_samples = [{'loss': output.get('loss', 0.0)} for output in outputs_list]
 
-        self.evaluator.process(data_samples=processed_samples, data_batch=data_batch)
+        with autocast(enabled=self.fp16):
+            outputs = self.runner.model.val_step(data_batch)
+        self.evaluator.process(data_samples=outputs, data_batch=data_batch)
         self.runner.call_hook(
             'after_val_iter',
             batch_idx=idx,
             data_batch=data_batch,
-            outputs=outputs_list)
-        
-        return val_loss / len(outputs_list) if outputs_list else 0.0
+            outputs=outputs)
+
+    def _decide_current_val_interval(self) -> None:
+        step = bisect.bisect(self.dynamic_milestones, (self.epoch + 1))
+        self.val_interval = self.dynamic_intervals[step - 1]
 
 
-@LOG_PROCESSORS.register_module()
-class LogProcessor:
-    """A log processor used to format log information collected from
-    ``runner.message_hub.log_scalars``.
 
-    ``LogProcessor`` instance is built by runner and will format
-    ``runner.message_hub.log_scalars`` to ``tag`` and ``log_str``, which can
-    directly used by ``LoggerHook`` and ``MMLogger``. Besides, the argument
-    ``custom_cfg`` of constructor can control the statistics method of logs.
-
-    Args:
-        window_size (int): default smooth interval. Defaults to 10.
-        by_epoch (bool): Whether to format logs with epoch stype. Defaults to
-            True.
-        custom_cfg (list[dict], optional): Contains multiple log config dict,
-            in which key means the data source name of log and value means the
-            statistic method and corresponding arguments used to count the
-            data source. Defaults to None.
-
-            - If custom_cfg is None, all logs will be formatted via default
-              methods, such as smoothing loss by default window_size. If
-              custom_cfg is defined as a list of config dict, for example:
-              [dict(data_src='loss', method='mean', log_name='global_loss',
-              window_size='global')]. It means the log item ``loss`` will be
-              counted as global mean and additionally logged as ``global_loss``
-              (defined by ``log_name``). If ``log_name`` is not defined in
-              config dict, the original logged key will be overwritten.
-
-            - The original log item cannot be overwritten twice. Here is
-              an error example:
-              [dict(data_src='loss', method='mean', window_size='global'),
-              dict(data_src='loss', method='mean', window_size='epoch')].
-              Both log config dict in custom_cfg do not have ``log_name`` key,
-              which means the loss item will be overwritten twice.
-
-            - For those statistic methods with the ``window_size`` argument,
-              if ``by_epoch`` is set to False, ``windows_size`` should not be
-              `epoch` to statistics log value by epoch.
-        num_digits (int): The number of significant digit shown in the
-            logging message. Defaults to 4.
-        log_with_hierarchy (bool): Whether to log with hierarchy. If it is
-            True, the information is written to visualizer backend such as
-            :obj:`LocalVisBackend` and :obj:`TensorboardBackend`
-            with hierarchy. For example, ``loss`` will be saved as
-            ``train/loss``, and accuracy will be saved as ``val/accuracy``.
-            Defaults to False.
-            `New in version 0.7.0.`
-        mean_pattern (str): This is a regular expression used to match the log
-            that need to be included in the smoothing statistics.
-            `New in version 0.7.3.`
-
-    Examples:
-        >>> # `log_name` is defined, `loss_large_window` will be an additional
-        >>> # record.
-        >>> log_processor = dict(
-        >>>     window_size=10,
-        >>>     by_epoch=True,
-        >>>     custom_cfg=[dict(data_src='loss',
-        >>>                       log_name='loss_large_window',
-        >>>                       method_name='mean',
-        >>>                       window_size=100)])
-        >>> # `log_name` is not defined. `loss` will be overwritten.
-        >>> log_processor = dict(
-        >>>     window_size=10,
-        >>>     by_epoch=True,
-        >>>     custom_cfg=[dict(data_src='loss',
-        >>>                       method_name='mean',
-        >>>                       window_size=100)])
-        >>> # Record loss with different statistics methods.
-        >>> log_processor = dict(
-        >>>     window_size=10,
-        >>>     by_epoch=True,
-        >>>     custom_cfg=[dict(data_src='loss',
-        >>>                       log_name='loss_large_window',
-        >>>                       method_name='mean',
-        >>>                       window_size=100),
-        >>>                  dict(data_src='loss',
-        >>>                       method_name='mean',
-        >>>                       window_size=100)])
-        >>> # Overwrite loss item twice will raise an error.
-        >>> log_processor = dict(
-        >>>     window_size=10,
-        >>>     by_epoch=True,
-        >>>     custom_cfg=[dict(data_src='loss',
-        >>>                       method_name='mean',
-        >>>                       window_size=100),
-        >>>                  dict(data_src='loss',
-        >>>                       method_name='max',
-        >>>                       window_size=100)])
-        AssertionError
-    """
-
-    def __init__(self,
-                 window_size=10,
-                 by_epoch=True,
-                 custom_cfg: Optional[List[dict]] = None,
-                 num_digits: int = 4,
-                 log_with_hierarchy: bool = False,
-                 mean_pattern=r'.*(loss|time|data_time|grad_norm).*'):
-        self.window_size = window_size
-        self.by_epoch = by_epoch
-        self.custom_cfg = custom_cfg if custom_cfg else []
-        self.num_digits = num_digits
-        self.log_with_hierarchy = log_with_hierarchy
-        self.mean_pattern = re.compile(mean_pattern)
-        self._check_custom_cfg()
-
-    def get_log_after_iter(self, runner, batch_idx: int,
-                           mode: str) -> Tuple[dict, str]:
-        """Format log string after training, validation or testing iteration.
-
-        Args:
-            runner (Runner): The runner of training phase.
-            batch_idx (int): The index of the current batch in the current
-                loop.
-            mode (str): Current mode of runner, train, test or val.
-
-        Return:
-            Tuple[dict, str]: Formatted log dict/string which will be
-            recorded by :obj:`runner.message_hub` and :obj:`runner.visualizer`.
-        """
-        assert mode in ['train', 'test', 'val']
-        # Overwrite ``window_size`` defined in ``custom_cfg`` to int value.
-        parsed_cfg = self._parse_windows_size(runner, batch_idx,
-                                              self.custom_cfg)
-        # log_tag is used to write log information to terminal
-        log_tag = self._collect_scalars(parsed_cfg, runner, mode)
-        if mode == 'val':
-            val_loss_tag = self._collect_scalars(parsed_cfg, runner, 'val')
-            for key, value in val_loss_tag.items():
-                log_tag[f'val/{key}'] = value
-        # If `self.log_with_hierarchy` is False, the tag is the same as
-        # log_tag. Otherwise, each key in tag starts with prefix `train`,
-        # `test` or `val`
-        if not self.log_with_hierarchy:
-            tag = copy.deepcopy(log_tag)
-        else:
-            tag = self._collect_scalars(parsed_cfg, runner, mode, True)
-
-        # Record learning rate.
-        lr_str_list = []
-        for key, value in tag.items():
-            if key.endswith('lr'):
-                key = self._remove_prefix(key, f'{mode}/')
-                log_tag.pop(key)
-                lr_str_list.append(f'{key}: '
-                                   f'{value:.{self.num_digits}e}')
-        lr_str = ' '.join(lr_str_list)
-        # Format log header.
-        # by_epoch == True
-        #   train/val: Epoch [5][5/10]  ...
-        #   test: Epoch [5/10]
-        # by_epoch == False
-        #  train: Epoch [5/10000] ... (divided by `max_iter`)
-        #  val/test: Epoch [5/2000] ... (divided by length of dataloader)
-        if self.by_epoch:
-            # Align the iteration log:
-            # Epoch(train)  [  9][010/270]
-            # ...                 ||| |||
-            # Epoch(train)  [ 10][100/270]
-            dataloader_len = self._get_dataloader_size(runner, mode)
-            cur_iter = self._get_iter(runner, batch_idx)
-            cur_iter_str = str(cur_iter).rjust(len(str(dataloader_len)))
-            if mode in ['train', 'val']:
-                cur_epoch = self._get_epoch(runner, mode)
-                if not (isinstance(runner._train_loop, dict)
-                        or runner._train_loop is None):
-                    # Right Align the epoch log:
-                    # Epoch(train)   [9][100/270]
-                    # ...             ||
-                    # Epoch(train) [100][100/270]
-                    max_epochs = runner.max_epochs
-                    # 3 means the three characters: "[", "]", and " " occupied
-                    # in " [{max_epochs}]"
-                    cur_epoch_str = f'[{cur_epoch}]'.rjust(
-                        len(str(max_epochs)) + 3, ' ')
-                else:
-                    cur_epoch_str = f'[{cur_epoch}]'
-                tag['epoch'] = cur_epoch
-                log_str = (f'Epoch({mode}){cur_epoch_str}'
-                           f'[{cur_iter_str}/{dataloader_len}]  ')
-            else:
-                log_str = (f'Epoch({mode}) '
-                           f'[{cur_iter_str}/{dataloader_len}]  ')
-        else:
-            if mode == 'train':
-                cur_iter = self._get_iter(runner, batch_idx)
-                cur_iter_str = str(cur_iter).rjust(len(str(runner.max_iters)))
-                log_str = (f'Iter({mode}) '
-                           f'[{cur_iter_str}/{runner.max_iters}]  ')
-            else:
-                dataloader_len = self._get_dataloader_size(runner, mode)
-                cur_iter_str = str(batch_idx + 1).rjust(
-                    len(str(dataloader_len)))
-                log_str = (f'Iter({mode}) [{cur_iter_str}/{dataloader_len}]  ')
-        # Add global iter.
-        if isinstance(runner._train_loop, dict) or runner._train_loop is None:
-            tag['iter'] = 0
-        else:
-            tag['iter'] = runner.iter + 1
-        # Concatenate lr, momentum string with log header.
-        log_str += f'{lr_str}  '
-        # If IterTimerHook used in runner, eta, time, and data_time should be
-        # recorded.
-        if (all(item in log_tag for item in ['time', 'data_time'])
-                and 'eta' in runner.message_hub.runtime_info):
-            eta = runner.message_hub.get_info('eta')
-            eta_str = str(datetime.timedelta(seconds=int(eta)))
-            log_str += f'eta: {eta_str}  '
-            log_str += (f'time: {log_tag["time"]:.{self.num_digits}f}  '
-                        f'data_time: '
-                        f'{log_tag["data_time"]:.{self.num_digits}f}  ')
-            # Pop recorded keys
-            log_tag.pop('time')
-            log_tag.pop('data_time')
-
-        # If cuda is available, the max memory occupied should be calculated.
-        if is_cuda_available():
-            max_memory = self._get_max_memory(runner)
-            log_str += f'memory: {max_memory}  '
-            tag['memory'] = max_memory
-        # Loop left keys to fill `log_str`.
-        if mode in ('train', 'val'):
-            log_items = []
-            for name, val in log_tag.items():
-                if mode == 'val' and not name.startswith('val/loss'):
-                    continue
-                if isinstance(val, float):
-                    val = f'{val:.{self.num_digits}f}'
-                log_items.append(f'{name}: {val}')
-            log_str += '  '.join(log_items)
-        return tag, log_str
-
-    
-
-    def get_log_after_epoch(self, runner, batch_idx: int, mode: str, with_non_scalar: bool = False) -> Tuple[dict, str]:
-        assert mode in ['test', 'val'], ('`_get_metric_log_str` only accept val or test mode, but got ' f'{mode}')
-        dataloader_len = self._get_dataloader_size(runner, mode)
-        
-        if self.by_epoch:
-            if mode == 'val':
-                cur_epoch = self._get_epoch(runner, mode)
-                log_str = (f'Epoch({mode}) [{cur_epoch}][{dataloader_len}/' f'{dataloader_len}]  ')
-            else:
-                log_str = (f'Epoch({mode}) [{dataloader_len}/{dataloader_len}]  ')
-        else:
-            log_str = (f'Iter({mode}) [{dataloader_len}/{dataloader_len}]  ')
-        
-        custom_cfg_copy = copy.deepcopy(self.custom_cfg)
-        custom_keys = [
-            self._remove_prefix(cfg['data_src'], f'{mode}/')
-            for cfg in custom_cfg_copy
-        ]
-        
-        if 'time' not in custom_keys:
-            custom_cfg_copy.append(dict(data_src='time', window_size='epoch', method_name='mean'))
-        if 'data_time' not in custom_keys:
-            custom_cfg_copy.append(dict(data_src='data_time', window_size='epoch', method_name='mean'))
-        
-        parsed_cfg = self._parse_windows_size(runner, batch_idx, custom_cfg_copy)
-        ori_tag = self._collect_scalars(parsed_cfg, runner, mode, self.log_with_hierarchy)
-        
-        non_scalar_tag = self._collect_non_scalars(runner, mode)
-        
-        tag = OrderedDict()
-        time_tag = OrderedDict()
-        
-        for key, value in ori_tag.items():
-            if key in (f'{mode}/time', f'{mode}/data_time', 'time', 'data_time'):
-                time_tag[key] = value
-            else:
-                tag[key] = value
-        
-        log_items = []
-        log_str += '  '
-        
-        for name, val in chain(tag.items(), non_scalar_tag.items(), time_tag.items()):
-            if isinstance(val, float):
-                val = f'{val:.{self.num_digits}f}'
-            if isinstance(val, (torch.Tensor, np.ndarray)):
-                val = f'\n{val}\n'
-            log_items.append(f'{name}: {val}')
-        
-        log_str += '  '.join(log_items)
-
-        if with_non_scalar:
-            tag.update(non_scalar_tag)
-        tag.update(time_tag)
-        
-        val_loss = ori_tag.get('loss', None) if mode == 'val' else None
-        if val_loss is not None:
-            log_str += f'  {mode}/loss: {val_loss:.{self.num_digits}f}'  # Include val loss
-        
-        return tag, log_str
-
-    def _collect_scalars(self,
-                         custom_cfg: List[dict],
-                         runner,
-                         mode: str,
-                         reserve_prefix: bool = False) -> dict:
-        """Collect log information to compose a dict according to mode.
-
-        Args:
-            custom_cfg (List[dict]): A copy of ``self.custom_cfg`` with int
-                ``window_size``.
-            runner (Runner): The runner of the training/testing/validation
-                process.
-            mode (str): Current mode of runner.
-            reserve_prefix (bool): Whether to reserve the prefix of the key.
-
-        Returns:
-            dict: Statistical values of logs.
-        """
-        custom_cfg = copy.deepcopy(custom_cfg)
-        tag = OrderedDict()
-        # history_scalars of train/val/test phase.
-        history_scalars = runner.message_hub.log_scalars
-        # corresponding mode history_scalars
-        mode_history_scalars = OrderedDict()
-        # extract log scalars and remove prefix to `mode_history_scalars`
-        # according to mode.
-        for prefix_key, log_buffer in history_scalars.items():
-            if prefix_key.startswith(mode):
-                if not reserve_prefix:
-                    key = self._remove_prefix(prefix_key, f'{mode}/')
-                else:
-                    key = prefix_key
-                mode_history_scalars[key] = log_buffer
-        for key in mode_history_scalars:
-            # Update the latest learning rate and smoothed time logs.
-            if re.search(self.mean_pattern, key) is not None:
-                tag[key] = mode_history_scalars[key].mean(self.window_size)
-            else:
-                # Default statistic method is current.
-                tag[key] = mode_history_scalars[key].current()
-        # Update custom keys.
-        for log_cfg in custom_cfg:
-            data_src = log_cfg.pop('data_src')
-            log_name = log_cfg.pop('log_name', data_src)
-            if reserve_prefix:
-                data_src = f'{mode}/{data_src}'
-                log_name = f'{mode}/{log_name}'
-            # log item in custom_cfg could only exist in train or val
-            # mode.
-            if data_src in mode_history_scalars:
-                tag[log_name] = mode_history_scalars[data_src].statistics(
-                    **log_cfg)
-        return tag
-
-    def _collect_non_scalars(self, runner, mode: str) -> dict:
-        """Collect log information to compose a dict according to mode.
-
-        Args:
-            runner (Runner): The runner of the training/testing/validation
-                process.
-            mode (str): Current mode of runner.
-
-        Returns:
-            dict: non-scalar infos of the specified mode.
-        """
-        # infos of train/val/test phase.
-        infos = runner.message_hub.runtime_info
-        # corresponding mode infos
-        mode_infos = OrderedDict()
-        # extract log info and remove prefix to `mode_infos` according to mode.
-        for prefix_key, value in infos.items():
-            if prefix_key.startswith(mode):
-                if self.log_with_hierarchy:
-                    key = prefix_key
-                else:
-                    key = self._remove_prefix(prefix_key, f'{mode}/')
-                mode_infos[key] = value
-        return mode_infos
-
-    def _remove_prefix(self, string: str, prefix: str):
-        """Remove the prefix ``train``, ``val`` and ``test`` of the key."""
-        if string.startswith(prefix):
-            return string[len(prefix):]
-        else:
-            return string
-
-    def _check_custom_cfg(self) -> None:
-        """Check the legality of ``self.custom_cfg``."""
-
-        def _check_window_size():
-            for log_cfg in self.custom_cfg:
-                if not self.by_epoch:
-                    assert log_cfg['window_size'] != 'epoch', \
-                        'window_size cannot be epoch if LoggerHook.by_epoch' \
-                        ' is False.'
-
-        def _check_repeated_log_name():
-            # The `log_name` of the same data_src should not be repeated.
-            # If `log_name` is not specified, `data_src` will be overwritten.
-            # But only allowed to be overwritten once.
-            check_set = set()
-            for log_cfg in self.custom_cfg:
-                assert 'data_src' in log_cfg
-                data_src = log_cfg['data_src']
-                log_name = log_cfg.get('log_name', data_src)
-                assert log_name not in check_set, (
-                    f'Found duplicate {log_name} for {data_src}. Please check'
-                    'your `custom_cfg` for `log_processor`. You should '
-                    f'neither define duplicate `{log_name}` for {data_src} '
-                    f'nor do not define any {log_name} for multiple '
-                    f'{data_src}, See more information in the docstring of '
-                    'LogProcessor')
-
-                check_set.add(log_name)
-
-        _check_repeated_log_name()
-        _check_window_size()
-
-    def _parse_windows_size(self,
-                            runner,
-                            batch_idx: int,
-                            custom_cfg: Optional[list] = None) -> list:
-        """Parse window_size defined in custom_cfg to int value.
-
-        Args:
-            runner (Runner): The runner of the training/testing/validation
-                process.
-            batch_idx (int): The iteration index of current dataloader.
-            custom_cfg (list): A copy of ``self.custom_cfg``. Defaults to None
-                to keep backward compatibility.
-        """
-        if custom_cfg is None:
-            custom_cfg = copy.deepcopy(self.custom_cfg)
-        else:
-            custom_cfg = copy.deepcopy(custom_cfg)
-        for log_cfg in custom_cfg:
-            window_size = log_cfg.get('window_size', None)
-            if window_size is None or isinstance(window_size, int):
-                continue
-            elif window_size == 'epoch':
-                log_cfg['window_size'] = batch_idx + 1
-            elif window_size == 'global':
-                log_cfg['window_size'] = runner.iter + 1
-            else:
-                raise TypeError(
-                    'window_size should be int, epoch or global, but got '
-                    f'invalid {window_size}')
-        return custom_cfg
-
-    def _get_max_memory(self, runner) -> int:
-        """Returns the maximum GPU memory occupied by tensors in megabytes (MB)
-        for a given device.
-
-        Args:
-            runner (Runner): The runner of the training/testing/validation
-                process.
-
-        Returns:
-            The maximum GPU memory occupied by tensors in megabytes for a given
-            device.
-        """
-
-        device = getattr(runner.model, 'output_device', None)
-        return get_max_cuda_memory(device)
-
-    def _get_iter(self, runner, batch_idx: int) -> int:
-        """Get current iteration index.
-
-        Args:
-            runner (Runner): The runner of the training/testing/validation
-                process.
-            batch_idx (int): The iteration index of current
-                dataloader. Defaults to None.
-
-        Returns:
-            int: The current global iter or inner iter.
-        """
-        if self.by_epoch:
-            current_iter = batch_idx + 1
-        else:
-            current_iter = runner.iter + 1
-        return current_iter
-
-    def _get_epoch(self, runner, mode: str) -> int:
-        """Get current epoch according to mode.
-
-        Args:
-            runner (Runner): The runner of the training/testing/validation
-                process.
-            mode (str): Current mode of runner.
-
-        Returns:
-            int: The current epoch.
-        """
-        if mode == 'train':
-            epoch = runner.epoch + 1
-        elif mode == 'val':
-            if (isinstance(runner._train_loop, dict)
-                    or runner._train_loop is None):
-                epoch = 0
-            else:
-                # normal val mode
-                # runner.epoch += 1 has been done before validation
-                epoch = runner.epoch
-        else:
-            raise ValueError(
-                f"runner mode should be 'train' or 'val', but got {mode}")
-        return epoch
-
-    def _get_cur_loop(self, runner, mode: str):
-        """Get current loop according to mode.
-
-        Args:
-            runner (Runner): The runner of the training/validation/testing
-                process.
-            mode (str): Current mode of runner.
-
-        Returns:
-            BaseLoop: Current loop of runner.
-        """
-        # returns type hint will occur circular import
-        if mode == 'train':
-            return runner.train_loop
-        elif mode == 'val':
-            return runner.val_loop
-        else:
-            return runner.test_loop
-
-    def _get_dataloader_size(self, runner, mode) -> int:
-        """Get dataloader size of current loop.
-
-        Args:
-            runner (Runner): The runner of the training/validation/testing
-            mode (str): Current mode of runner.
-
-        Returns:
-            int: The dataloader size of current loop.
-        """
-        return len(self._get_cur_loop(runner=runner, mode=mode).dataloader)
 
 @MMENGINE_DATA_SAMPLERS.register_module()
 class CustomSampler(Sampler):

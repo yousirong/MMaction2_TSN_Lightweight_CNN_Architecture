@@ -51,13 +51,15 @@ class AccMetric(BaseMetric):
             metrics = (metric_list, )
         else:
             metrics = metric_list
-
+        valid_metrics = [
+            'top_k_accuracy', 'mean_class_accuracy',
+            'mmit_mean_average_precision', 'mean_average_precision'
+        ]
         # coco evaluation metrics
         for metric in metrics:
-            assert metric in [
-                'top_k_accuracy', 'mean_class_accuracy',
-                'mmit_mean_average_precision', 'mean_average_precision'
-            ]
+            if metric not in valid_metrics:
+                raise ValueError(f"Invalid metric '{metric}' provided. "
+                                 f"Supported metrics are: {', '.join(valid_metrics)}")
 
         self.metrics = metrics
         self.metric_options = metric_options
@@ -72,10 +74,14 @@ class AccMetric(BaseMetric):
             data_batch (Sequence[dict]): A batch of data from the dataloader.
             data_samples (Sequence[dict]): A batch of outputs from the model.
         """
-        data_samples = copy.deepcopy(data_samples)
+        data_samples_copy = [copy.deepcopy(sample) for sample in data_samples if isinstance(sample, dict)]
         for data_sample in data_samples:
             result = dict()
+            if 'pred_score' not in data_sample:
+                raise KeyError("Key 'pred_score' is missing in data_sample")
             pred = data_sample['pred_score']
+            if 'gt_label' not in data_sample:
+                raise KeyError("Key 'gt_label' is missing in data_sample")
             label = data_sample['gt_label']
 
             # Ad-hoc for RGBPoseConv3D
