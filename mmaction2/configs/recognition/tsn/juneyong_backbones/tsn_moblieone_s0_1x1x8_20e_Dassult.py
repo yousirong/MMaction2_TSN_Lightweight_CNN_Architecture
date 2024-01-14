@@ -64,7 +64,7 @@ test_pipeline = [
         frame_interval=1,
         num_clips=8,
         test_mode=True),
-    dict(type= 'RawFrameDecode'),
+    dict(type='RawFrameDecode'),
     dict(type='CenterCrop', crop_size=(960, 720)),
     dict(type='Resize', scale=(224, 224), keep_ratio=False),
     dict(type='Flip', flip_ratio=0.5),
