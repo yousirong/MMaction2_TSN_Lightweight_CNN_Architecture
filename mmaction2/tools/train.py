@@ -1,12 +1,22 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import argparse
+import copy
+import time
+import warnings
 import os
 import os.path as osp
 
+import mmcv
+import torch
+import torch.distributed as dist
+from mmaction.datasets import BaseActionDataset
+
 from mmengine.config import Config, DictAction
 from mmengine.runner import Runner
-
+# from mmengine.utils.dl_utils import (collect_env,set_multi_processing)
 from mmaction.registry import RUNNERS
+from mmengine.registry import (DATASETS)
+from mmengine.evaluator import Evaluator
 
 
 def parse_args():
@@ -25,6 +35,10 @@ def parse_args():
         '--amp',
         action='store_true',
         help='enable automatic-mixed-precision training')
+    parser.add_argument(
+        '--validate',
+        action='store_true',
+        help='whether to evaluate the checkpoint during training'),
     parser.add_argument(
         '--no-validate',
         action='store_true',
@@ -72,7 +86,12 @@ def merge_args(cfg, args):
         cfg.val_cfg = None
         cfg.val_dataloader = None
         cfg.val_evaluator = None
-
+    if args.validate:
+        cfg.validate = True  # 이 부분이 추가됨
+        if cfg.get('val_cfg', None) is None:
+            cfg.val_cfg = {}  # 기본 검증 구성을 설정합니다.
+    else:
+        cfg.validate = False
     cfg.launcher = args.launcher
 
     # work_dir is determined in this priority: CLI > segment in file > filename
@@ -125,7 +144,7 @@ def main():
 
     # merge cli arguments to config
     cfg = merge_args(cfg, args)
-
+        
     # build the runner from config
     if 'runner_type' not in cfg:
         # build the default runner

@@ -1,5 +1,5 @@
 _base_ = [
-    '../../../_base_/models/tsn_shufflenet_v2_1x.py', '../../../_base_/schedules/sgd_100e.py',
+    '../../../_base_/models/tsn_shufflenet_v2_1x.py', '../../../_base_/schedules/sgd_120e.py',
     '../../../_base_/default_runtime.py'
 ]
 # _base_설명 :tsn_shufflenetv2 사용 , schedules/adam 20epoch optimizer 사용

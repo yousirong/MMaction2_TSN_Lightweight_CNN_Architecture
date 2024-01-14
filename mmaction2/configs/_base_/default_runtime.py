@@ -18,7 +18,7 @@ log_processor = dict(type='LogProcessor', window_size=20, by_epoch=True)
 
 vis_backends = [dict(type='LocalVisBackend')]
 visualizer = dict(type='ActionVisualizer', vis_backends=vis_backends)
-workflow =[('train', 1), ('val', 1)]
+workflow=[('train',1),('val',1)]
 log_level = 'INFO'
 load_from = None
 # load_from = './abnormal_model.pth'

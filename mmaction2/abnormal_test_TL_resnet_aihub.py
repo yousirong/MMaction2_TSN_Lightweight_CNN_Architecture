@@ -46,9 +46,9 @@ logging.basicConfig(filename="abnormal_logfile_resnet_aihub_TL_test.log", filemo
 logger = logging.getLogger()
 
 cfg = Config.fromfile('./configs/recognition/tsn/juneyong_backbones/tsn_r50_1x1x8_20e_Dassult_aihub.py')
-cfg.dataset_type = 'VideoDataset'
+cfg.dataset_type = 'RawframeDataset'
 cfg.data_root = './datasets/allData/'
-cfg.test_dataloader.dataset.type = 'VideoDataset'
+cfg.test_dataloader.dataset.type = 'RawframeDataset'
 # # TL 테스트 데이터 어노테이션 txt
 cfg.test_dataloader.dataset.ann_file = './datasets/allData/TL_test_abnormal_normal.txt'
 # # 유튜브 실제 데이터 어노테이션 txt
@@ -62,7 +62,7 @@ cfg.load_from = './work_dirs/tsn_r50_1x1x8_20e_Dassult_aihub/best_acc_top1_epoch
 cfg.work_dir = './work_dirs/tsn_r50_1x1x8_20e_Dassult_aihub/'
 cfg.test_dataloader.videos_per_gpu = 12
 cfg.optim_wrapper.optimizer.lr = cfg.optim_wrapper.optimizer.lr / 8 / 16
-cfg.total_epochs = 20
+cfg.total_epochs = 120
 cfg.default_hooks.checkpoint.interval = 5
 cfg.default_hooks.logger.interval = 5
 cfg.seed = 0

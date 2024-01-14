@@ -1,5 +1,5 @@
 _base_ = [
-    '../../../_base_/models/tsn_mobileone_s1.py', '../../../_base_/schedules/sgd_100e.py',
+    '../../../_base_/models/tsn_mobileone_s1.py', '../../../_base_/schedules/sgd_120e.py',
     '../../../_base_/default_runtime.py'
 ]
 # _base_설명 :tsn_mobileone_s1 backbone 모델 사용, schedules/adam 20epoch optimizer 사용
@@ -18,12 +18,13 @@ img_norm_cfg = dict(
 train_pipeline = [
     dict(type='SampleFrames', clip_len=1, frame_interval=1, num_clips=8),
     dict(type= 'RawFrameDecode'),
-    dict(
-        type='MultiScaleCrop',
-        input_size=224,
-        scales=(1, 0.875, 0.75, 0.66), 
-        random_crop=False,
-        max_wh_scale_gap=1),
+    # dict(
+    #     type='MultiScaleCrop',
+    #     input_size=224,
+    #     scales=(1, 0.875, 0.75, 0.66),
+    #     random_crop=False,
+    #     max_wh_scale_gap=1),
+    dict(type='CenterCrop', crop_size=(960, 720)),
     dict(type='Resize', scale=(224, 224), keep_ratio=False),
     dict(type='Flip', flip_ratio=0.5),
     dict(type='FormatShape', input_format='NCHW'),
@@ -37,8 +38,9 @@ val_pipeline = [
         num_clips=8,
         test_mode=True),
     dict(type= 'RawFrameDecode'),
-    dict(type='Resize', scale=(-1, 256)),
-    dict(type='CenterCrop', crop_size=224),
+    dict(type='CenterCrop', crop_size=(960, 720)),
+    dict(type='Resize', scale=(224, 224), keep_ratio=False),
+    dict(type='Flip', flip_ratio=0.5),
     dict(type='FormatShape', input_format='NCHW'),
     dict(type='PackActionInputs'),
 ]
@@ -56,21 +58,21 @@ val_pipeline = [
 #     dict(type='PackActionInputs')
 # ]
 test_pipeline = [
-    dict(type='DecordInit'),
     dict(
         type='SampleFrames',
         clip_len=1,
         frame_interval=1,
         num_clips=8,
         test_mode=True),
-    dict(type='DecordDecode'),
-    dict(type='Resize', scale=(-1, 256)),
-    dict(type='CenterCrop', crop_size=224),
+    dict(type='RawFrameDecode'),
+    dict(type='CenterCrop', crop_size=(960, 720)),
+    dict(type='Resize', scale=(224, 224), keep_ratio=False),
+    dict(type='Flip', flip_ratio=0.5),
     dict(type='FormatShape', input_format='NCHW'),
-    dict(type='PackActionInputs')
+    dict(type='PackActionInputs'),
 ]
 train_dataloader = dict(
-    batch_size=20,
+    batch_size=8,
     num_workers=2,
     persistent_workers=True,
     sampler=dict(type='CustomSampler', shuffle=True, ann_file=ann_file_train),
@@ -80,7 +82,7 @@ train_dataloader = dict(
         data_prefix=dict(img=data_root), 
         pipeline=train_pipeline))
 val_dataloader = dict(
-    batch_size=20,
+    batch_size=8,
     num_workers=2,
     persistent_workers=True,
     sampler=dict(type='CustomSampler', shuffle=False, ann_file=ann_file_val),
@@ -91,7 +93,7 @@ val_dataloader = dict(
         pipeline=val_pipeline,
         test_mode=True))
 test_dataloader = dict(
-    batch_size=20,
+    batch_size=8,
     num_workers=2,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=False), 
