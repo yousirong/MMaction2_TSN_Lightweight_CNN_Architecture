@@ -50,19 +50,14 @@ cfg.dataset_type = 'VideoDataset'
 cfg.data_root = './datasets/allData/'
 cfg.test_dataloader.dataset.type = 'VideoDataset'
 
-
-
-
 # # TL 테스트 데이터 어노테이션 txt
 # cfg.test_dataloader.dataset.ann_file = './datasets/allData/TL_test_abnormal_normal.txt'
 # # 유튜브 실제 데이터 어노테이션 txt
 cfg.test_dataloader.dataset.ann_file = './datasets/allData/Youtube_abnormal.txt'
-
-
 cfg.test_dataloader.dataset.data_prefix.video = './datasets/abnormal_data_test'
 cfg.setdefault('omnisource', False)
 # cfg.model.cls_head.num_classes = 2
-cfg.load_from = './work_dirs/tsn_moblieone_s1_1x1x8_20e_Dassult/best_acc_top1_epoch_99.pth'
+cfg.load_from = './work_dirs/tsn_moblieone_s1_1x1x8_20e_Dassult/best_acc_top1_epoch_117.pth'
 cfg.work_dir = './work_dirs/tsn_moblieone_s1_1x1x8_20e_Dassult/'
 cfg.test_dataloader.videos_per_gpu = 12
 cfg.optim_wrapper.optimizer.lr = cfg.optim_wrapper.optimizer.lr / 8 / 16
@@ -75,7 +70,7 @@ cfg.gpu_ids = range(1)
 cfg.evaluation.save_best='auto'
 
 # Setup a checkpoint file to load
-checkpoint = './work_dirs/tsn_moblieone_s1_1x1x8_20e_Dassult/best_acc_top1_epoch_99.pth'
+checkpoint = './work_dirs/tsn_moblieone_s1_1x1x8_20e_Dassult/best_acc_top1_epoch_117.pth'
 model = init_recognizer(cfg, checkpoint, device='cuda:0')
 
 

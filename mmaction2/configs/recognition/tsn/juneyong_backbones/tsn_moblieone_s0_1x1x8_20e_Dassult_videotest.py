@@ -52,33 +52,35 @@ val_pipeline = [
     dict(type='FormatShape', input_format='NCHW'),
     dict(type='PackActionInputs')
 ]
-# test_pipeline = [
-#     dict(
-#         type='SampleFrames',
-#         clip_len=1,
-#         frame_interval=1,
-#         num_clips=8,
-#         test_mode=True),
-#     dict(type= 'RawFrameDecode'),
-#     dict(type='Resize', scale=(-1, 256)),
-#     dict(type='TenCrop', crop_size=224),
-#     dict(type='FormatShape', input_format='NCHW'),
-#     dict(type='PackActionInputs')
-# ]
 test_pipeline = [
+    dict(type='DecordInit'),
     dict(
         type='SampleFrames',
         clip_len=1,
         frame_interval=1,
         num_clips=8,
         test_mode=True),
-    dict(type= 'RawFrameDecode'),
-    dict(type='CenterCrop', crop_size=(960, 720)),
-    dict(type='Resize', scale=(224, 224), keep_ratio=False),
-    dict(type='Flip', flip_ratio=0.5),
+    dict(type='DecordDecode'),
+    dict(type='Resize', scale=(-1, 256)),
+    dict(type='CenterCrop', crop_size=224),
     dict(type='FormatShape', input_format='NCHW'),
-    dict(type='PackActionInputs'),
+    dict(type='PackActionInputs')
 ]
+# test_pipeline = [
+#     dict(type='DecordInit'),
+#     dict(
+#         type='SampleFrames',
+#         clip_len=1,
+#         frame_interval=1,
+#         num_clips=8,
+#         test_mode=True),
+#     dict(type='DecordDecode'),
+#     dict(type='CenterCrop', crop_size=(960, 720)),
+#     dict(type='Resize', scale=(224, 224), keep_ratio=False),
+#     dict(type='Flip', flip_ratio=0.5),
+#     dict(type='FormatShape', input_format='NCHW'),
+#     dict(type='PackActionInputs'),
+# ]
 # img_norm_cfg = dict(
 #     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_bgr=False)
 # train_pipeline = [

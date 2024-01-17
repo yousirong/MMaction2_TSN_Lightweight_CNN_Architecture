@@ -57,7 +57,7 @@ cfg.test_dataloader.dataset.ann_file = './datasets/allData/TL_test_abnormal_norm
 cfg.test_dataloader.dataset.data_prefix.video = './datasets/abnormal_data_test'
 cfg.setdefault('omnisource', False)
 # cfg.model.cls_head.num_classes = 2
-cfg.load_from = './work_dirs/tsn_moblieone_s0_1x1x8_20e_Dassult/best_acc_top1_epoch_96.pth'
+cfg.load_from = './work_dirs/tsn_moblieone_s0_1x1x8_20e_Dassult/best_acc_top1_epoch_112.pth'
 cfg.work_dir = './work_dirs/tsn_moblieone_s0_1x1x8_20e_Dassult/'
 cfg.test_dataloader.videos_per_gpu = 12
 cfg.optim_wrapper.optimizer.lr = cfg.optim_wrapper.optimizer.lr / 8 / 16
@@ -70,7 +70,7 @@ cfg.gpu_ids = range(1)
 cfg.evaluation.save_best='auto'
 
 # Setup a checkpoint file to load
-checkpoint = './work_dirs/tsn_moblieone_s0_1x1x8_20e_Dassult/best_acc_top1_epoch_96.pth'
+checkpoint = './work_dirs/tsn_moblieone_s0_1x1x8_20e_Dassult/best_acc_top1_epoch_112.pth'
 model = init_recognizer(cfg, checkpoint, device='cuda:0')
 
 

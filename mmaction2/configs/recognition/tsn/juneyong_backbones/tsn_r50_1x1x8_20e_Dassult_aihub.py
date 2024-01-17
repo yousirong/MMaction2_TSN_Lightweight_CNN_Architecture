@@ -123,5 +123,5 @@ visualizer = dict(
     vis_backends=[dict(type='LocalVisBackend'), dict(type='TensorboardVisBackend')],
 )
 # runtime settings
-work_dir = './work_dirs/tsn_r50_1x1x8_20e_Dassult/'
+work_dir = './work_dirs/tsn_r50_1x1x8_20e_Dassult_aihub/'
 

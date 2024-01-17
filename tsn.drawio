@@ -1,6 +1,6 @@
-<mxfile host="app.diagrams.net" modified="2024-01-14T15:15:49.143Z" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" etag="wYK4nkD7MqoiuxSpacH2" version="22.1.18" type="google">
+<mxfile host="app.diagrams.net" modified="2024-01-14T16:36:25.973Z" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" etag="YDuALifBbZKeOM7z0UpH" version="22.1.18" type="google">
   <diagram name="페이지-1" id="cFxwkXeeFtYfiVxIqS92">
-    <mxGraphModel grid="0" page="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" pageScale="1" pageWidth="827" pageHeight="1169" background="#F3FDF6" math="0" shadow="0">
+    <mxGraphModel grid="0" page="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" pageScale="1" pageWidth="827" pageHeight="1169" background="#d07b7c" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -193,7 +193,7 @@
           <mxGeometry x="451" y="707.25" width="21" height="13" as="geometry" />
         </mxCell>
         <mxCell id="281pxm4yxtadyugSzaWR-1" value="Training" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;rotation=-90;" vertex="1" parent="1">
-          <mxGeometry x="72" y="700.25" width="61" height="26" as="geometry" />
+          <mxGeometry x="72" y="700.75" width="61" height="26" as="geometry" />
         </mxCell>
       </root>
     </mxGraphModel>
