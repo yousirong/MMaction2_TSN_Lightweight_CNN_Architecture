@@ -12,7 +12,8 @@ data_root_val = ''
 ann_file_train = './datasets/allData/TL_train.txt'
 ann_file_val = './datasets/allData/TL_val.txt'
 ann_file_test = './datasets/allData/TL_test.txt'
-
+# RawFrameDecode와 MultiScaleCrop사이에 dict(type='Resize', scale=(-1, 256)),
+# 넣고 실험해보기
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_bgr=False)
 # train_pipeline = [
@@ -97,7 +98,7 @@ test_pipeline = [
 ]
 train_dataloader = dict(
     batch_size=8,
-    num_workers=2,
+    num_workers=1,
     persistent_workers=True,
     sampler=dict(type='CustomSampler', shuffle=True, ann_file=ann_file_train),
     dataset=dict(
@@ -107,7 +108,7 @@ train_dataloader = dict(
         pipeline=train_pipeline))
 val_dataloader = dict(
     batch_size=8,
-    num_workers=2,
+    num_workers=1,
     persistent_workers=True,
     sampler=dict(type='CustomSampler', shuffle=False, ann_file=ann_file_val),
     dataset=dict(
@@ -118,7 +119,7 @@ val_dataloader = dict(
         test_mode=True))
 test_dataloader = dict(
     batch_size=8,
-    num_workers=2,
+    num_workers=1,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=False), 
     dataset=dict(
