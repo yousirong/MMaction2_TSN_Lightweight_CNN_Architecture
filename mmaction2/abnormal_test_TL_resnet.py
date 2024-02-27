@@ -42,7 +42,7 @@ import csv  # Import csv module
 import numpy as np
 
 Log_Format = "%(levelname)s %(asctime)s - %(message)s"
-logging.basicConfig(filename="abnormal_logfile_resnet_TL_test.log", filemode="w", format=Log_Format, level=logging.DEBUG)
+logging.basicConfig(filename="abnormal_logfile_TL_resnet.log", filemode="w", format=Log_Format, level=logging.DEBUG)
 logger = logging.getLogger()
 
 cfg = Config.fromfile('./configs/recognition/tsn/juneyong_backbones/tsn_r50_1x1x8_20e_Dassult.py')
