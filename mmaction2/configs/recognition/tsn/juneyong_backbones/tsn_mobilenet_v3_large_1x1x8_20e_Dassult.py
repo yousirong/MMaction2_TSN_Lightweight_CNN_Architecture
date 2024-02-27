@@ -2,7 +2,7 @@ _base_ = [
     '../../../_base_/models/tsn_mobilenet_v3_large.py', '../../../_base_/schedules/sgd_120e.py',
     '../../../_base_/default_runtime.py'
 ]
-# _base_설명 :tsn_shufflenetv2 사용 , schedules/adam 20epoch optimizer 사용
+# _base_설명 :tsn_mobilenet_v3_large 사용 , schedules/sgd_120epoch optimizer 사용
 # 그냥 돌리면 패키지 에러남. 
 # !pip install timm 
 # !pip install mmpretrain  

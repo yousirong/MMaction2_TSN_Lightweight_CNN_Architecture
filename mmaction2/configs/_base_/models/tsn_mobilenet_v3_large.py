@@ -4,7 +4,7 @@ checkpoint = ('https://download.openmmlab.com/mmclassification/v0/mobilenet_v3/'
 model = dict(
     type='Recognizer2D',
     backbone=dict(
-        type='MobileNetV3',
+        type='mmpretrain.MobileNetV3',
         arch='large',        
         init_cfg=dict(
             type='Pretrained', checkpoint=checkpoint, prefix='backbone'),
@@ -13,13 +13,11 @@ model = dict(
         type='TSNHead',
         num_classes=2,
         in_channels=960,
-        mid_channels=[1280],
-        dropout_rate=0.2,
-        act_cfg=dict(type='HSwish'),
-        loss=dict(type='CrossEntropyLoss', loss_weight=1.0),
-        init_cfg=dict(
-            type='Normal', layer='Linear', mean=0., std=0.01, bias=0.),
-        topk=(1, 5)),
+        spatial_type='avg',
+        consensus=dict(type='AvgConsensus', dim=1),
+        dropout_ratio=0.2,
+        init_std=0.01,
+        average_clips='prob'),
     data_preprocessor=dict(
         type='ActionDataPreprocessor',
         mean=[123.675, 116.28, 103.53],
