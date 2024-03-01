@@ -1,5 +1,5 @@
 _base_ = [
-    '../../../_base_/models/tsn_shufflenet_v2.py', '../../../_base_/schedules/sgd_120e.py',
+    '../../../_base_/models/tsn_shufflenet_v2.py', '../../../_base_/schedules/sgd_120e_shufflenet_v2.py',
     '../../../_base_/default_runtime.py'
 ]
 # _base_설명 :tsn_shufflenet_v2 사용 , schedules/sgd_120epoch optimizer 사용
@@ -56,7 +56,7 @@ test_pipeline = [
     dict(type='PackActionInputs'),
 ]
 train_dataloader = dict(
-    batch_size=64,
+    batch_size=8,
     num_workers=1,
     persistent_workers=True,
     sampler=dict(type='CustomSampler', shuffle=True, ann_file=ann_file_train),
@@ -66,7 +66,7 @@ train_dataloader = dict(
         data_prefix=dict(img=data_root), 
         pipeline=train_pipeline))
 val_dataloader = dict(
-    batch_size=64,
+    batch_size=8,
     num_workers=1,
     persistent_workers=True,
     sampler=dict(type='CustomSampler', shuffle=False, ann_file=ann_file_val),
@@ -77,7 +77,7 @@ val_dataloader = dict(
         pipeline=val_pipeline,
         test_mode=True))
 test_dataloader = dict(
-    batch_size=64,
+    batch_size=8,
     num_workers=1,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=False), 

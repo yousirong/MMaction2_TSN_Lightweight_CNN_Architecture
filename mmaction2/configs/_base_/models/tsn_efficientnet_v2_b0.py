@@ -1,5 +1,5 @@
-checkpoint = ('https://download.openmmlab.com/mmclassification/v0/efficientnetv2/'
-              'efficientnetv2-b0_3rdparty_in1k_20221221-9ef6e736.pth')
+checkpoint = ('https://download.openmmlab.com/mmclassification/v0/'
+              'efficientnet/efficientnetv2-b0_3rdparty_in1k_20221221-9ef6e736.pth')
 
 model = dict(
     type='Recognizer2D',

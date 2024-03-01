@@ -1,5 +1,5 @@
 _base_ = [
-    '../../../_base_/models/tsn_mobilenet_v2.py', '../../../_base_/schedules/sgd_120e.py',
+    '../../../_base_/models/tsn_mobilenet_v2.py', '../../../_base_/schedules/sgd_120e_mobilenet_v2.py',
     '../../../_base_/default_runtime.py'
 ]
 # _base_설명 :tsn_mobilenet_v2 사용 , schedules/sgd_120epoch optimizer 사용

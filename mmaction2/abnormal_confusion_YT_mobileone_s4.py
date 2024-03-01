@@ -42,12 +42,11 @@ if __name__ == '__main__':
         line_arr = line.split("\t")
         # print(line_arr)
         # 'Assault Detected' is labeled as '0' (abnormal), 'No Assault Detected' as '1' (normal)
-        gt = line_arr[2].strip() if len(line_arr) > 2 else None
-        predict = line_arr[3].strip() if len(line_arr) > 3 else None
+        gt = 'assault' if line_arr[2].strip() == 'assault' else 'normal'
+        predict = 'assault' if line_arr[3].strip() == 'assault' else 'normal'
         print(gt, predict)
-        if gt is not None and predict is not None:
-            y_true.append(gt)
-            y_pred.append(predict)
+        y_true.append(gt)
+        y_pred.append(predict)
     f.close()
 
     # Update label list to reflect the new labeling scheme
