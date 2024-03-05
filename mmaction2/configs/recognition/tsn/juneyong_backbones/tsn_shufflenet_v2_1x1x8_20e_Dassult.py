@@ -2,8 +2,8 @@ _base_ = [
     '../../../_base_/models/tsn_shufflenet_v2.py', '../../../_base_/schedules/sgd_120e_shufflenet_v2.py',
     '../../../_base_/default_runtime.py'
 ]
-# _base_ì„¤ëª… :tsn_shufflenet_v2 ì‚¬ìš© , schedules/sgd_120epoch optimizer ì‚¬ìš©
-# ê·¸ëƒ¥ ëŒë¦¬ë©´ íŒ¨í‚¤ì§€ ì—ëŸ¬ë‚¨. 
+# _base_¼³¸í :tsn_shufflenet_v2 »ç¿ë , schedules/sgd_120epoch optimizer »ç¿ë
+# ±×³É µ¹¸®¸é ÆĞÅ°Áö ¿¡·¯³². 
 # !pip install timm 
 # !pip install mmpretrain  
 

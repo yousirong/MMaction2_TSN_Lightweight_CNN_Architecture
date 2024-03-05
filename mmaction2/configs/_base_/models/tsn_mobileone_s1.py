@@ -14,7 +14,7 @@ model = dict(
         in_channels=1280,  # 1280
         spatial_type='avg',
         consensus=dict(type='AvgConsensus', dim=1),
-        dropout_ratio=0.4,
+        dropout_ratio=0.2,
         init_std=0.01,
         average_clips='prob'),
     data_preprocessor=dict(

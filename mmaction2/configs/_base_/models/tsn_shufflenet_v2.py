@@ -5,7 +5,7 @@ model = dict(
     type='Recognizer2D',
     backbone=dict(
         type='mmpretrain.ShuffleNetV2',
-        # widen_factor=1.0,
+        widen_factor=1.0,
         init_cfg=dict(
             type='Pretrained', checkpoint=checkpoint, prefix='backbone'),
         norm_eval=False),

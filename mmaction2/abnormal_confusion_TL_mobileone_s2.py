@@ -34,17 +34,13 @@ if __name__ == '__main__':
 
     # f = open("abnormal_logfile_s2.log", "rt") # 유튜브 실제 데이터 log
     f = open("abnormal_logfile_TL_mobileone_s2.log", "rt") # TL 테스트 데이터
-    lines = f.readlines()
-    for line in lines:
-        print(line, end='')
-        line_arr = line.split("\t")
-        # print(line_arr)
-        # 'Assault Detected' is labeled as '0' (abnormal), 'No Assault Detected' as '1' (normal)
-        gt = 'assault' if line_arr[2].strip() == 'assault' else 'normal'
-        predict = 'assault' if line_arr[3].strip() == 'assault' else 'normal'
-        print(gt, predict)
-        y_true.append(gt)
-        y_pred.append(predict)
+    for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) >= 4:
+                gt = 'assault' if parts[2].strip() == 'assault' else 'normal'
+                predict = 'assault' if parts[3].strip() == 'assault' else 'normal'
+                y_true.append(gt)
+                y_pred.append(predict)
     f.close()
 
     # Update label list to reflect the new labeling scheme

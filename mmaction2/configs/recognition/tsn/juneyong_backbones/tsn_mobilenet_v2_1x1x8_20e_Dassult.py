@@ -87,13 +87,13 @@ test_dataloader = dict(
         data_prefix=dict(img=data_root_val), 
         pipeline=test_pipeline,
         test_mode=True))
-custom_hooks = [
-    dict(
-        type='EMAHook',
-        momentum=5e-4,
-        priority='ABOVE_NORMAL',
-        update_buffers=True)
-]
+# custom_hooks = [
+#     dict(
+#         type='EMAHook',
+#         momentum=5e-4,
+#         priority='ABOVE_NORMAL',
+#         update_buffers=True)
+# ]
 # optim_wrapper = dict(paramwise_cfg=dict(norm_decay_mult=0.))
 evaluation = dict(
     interval=5, metrics=['top_k_accuracy', 'mean_class_accuracy'])
