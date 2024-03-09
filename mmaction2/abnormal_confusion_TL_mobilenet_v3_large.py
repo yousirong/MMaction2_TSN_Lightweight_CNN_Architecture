@@ -33,8 +33,7 @@ if __name__ == '__main__':
     y_pred = []
 
     # f = open("abnormal_logfile_resnet.log", "rt") # 유튜브 실제 데이터 log
-    f = open("abnormal_logfile_TL_mobilenet_v3_large.log", "rt") # TL 테스트 데이터 log
-    lines = f.readlines()
+    f = open("abnormal_logfile_TL_mobilenet_v3_large.log", "rt") # TL 테스트 데이터 log 
     for line in f:
             parts = line.strip().split("\t")
             if len(parts) >= 4:

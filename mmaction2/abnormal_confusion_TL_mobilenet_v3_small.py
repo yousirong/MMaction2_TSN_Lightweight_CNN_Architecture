@@ -34,7 +34,6 @@ if __name__ == '__main__':
 
     # f = open("abnormal_logfile_resnet.log", "rt") # 유튜브 실제 데이터 log
     f = open("abnormal_logfile_TL_mobilenet_v3_small.log", "rt") # TL 테스트 데이터 log
-    lines = f.readlines()
     for line in f:
             parts = line.strip().split("\t")
             if len(parts) >= 4:
