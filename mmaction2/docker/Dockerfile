@@ -54,11 +54,12 @@ ENV CUBLAS_WORKSPACE_CONFIG=:16:8
 # Install MMAction2
 RUN conda clean --all
 RUN git clone https://github.com/yousirong/MMaction2_TSN_Lightweight_CNN_Architecture.git /app
+
 WORKDIR /app
-RUN mkdir -p /mmaction2/data
+# COPY mmaction2/datasets/allData /app/mmaction2/datasets/allData
+RUN mkdir -p /mmaction2/datasets/allData
+COPY ./allData/ /app/mmaction2/datasets/allData
 ENV FORCE_CUDA="1"
 
-# Copy MMAction2 source code into the Docker image
-COPY . /app
 
 CMD ["bin/bash"]
