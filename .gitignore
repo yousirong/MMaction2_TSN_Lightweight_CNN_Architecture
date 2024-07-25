@@ -8,3 +8,6 @@ mmaction2/datasets/allData.lnk
 # datasets
 mmaction2/datasets
 mmaction2/docker/allData
+
+# result
+mmaction2/result
