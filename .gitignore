@@ -1,10 +1,13 @@
-#Folder config file 
+#Folder config file
 desktop.ini
 **/.git/**/desktop.ini
 G:/내 드라이브/MMaction2_TSN_Lightweight_CNN_Architecture/.git/refs/desktop.ini
-# .lnk 
+# .lnk
 mmaction2/datasets/allData.lnk
 
 # datasets
 mmaction2/datasets
 mmaction2/docker/allData
+
+# result
+result
